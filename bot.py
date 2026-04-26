@@ -22,14 +22,14 @@ TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
 
-# ===== НАСТРОЙКИ АВТООТЧЁТА =====
+# ===== НАСТРОЙКИ =====
 
 REPORT_HOUR = 9
 REPORT_MINUTE = 0
 MAX_MESSAGE_LENGTH = 4000
 
 
-# ===== КНОПКИ БОТА =====
+# ===== КНОПКИ =====
 
 keyboard = [
     ["📊 Анализ сейчас"],
@@ -41,13 +41,12 @@ markup = ReplyKeyboardMarkup(
 )
 
 
-# ===== ВСПОМОГАТЕЛЬНАЯ ФУНКЦИЯ ОТПРАВКИ =====
+# ===== ОТПРАВКА ДЛИННЫХ СООБЩЕНИЙ =====
 
 async def send_long_message(bot, chat_id, text):
     """
-    Отправляет длинный текст частями.
-    Telegram ограничивает длину одного сообщения,
-    поэтому длинный отчёт делим на несколько сообщений.
+    Telegram ограничивает длину сообщения.
+    Поэтому длинный отчёт отправляем частями.
     """
 
     for start_index in range(0, len(text), MAX_MESSAGE_LENGTH):
@@ -55,26 +54,26 @@ async def send_long_message(bot, chat_id, text):
         await bot.send_message(chat_id=chat_id, text=part)
 
 
-# ===== КОМАНДА /start =====
+# ===== /start =====
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
-    Показывает пользователю главное меню.
+    Показывает главное меню.
     """
 
     await update.message.reply_text(
-        "Бот запущен. Автоотчёт будет приходить каждый день в 09:00.\n"
-        "Также можно запустить анализ вручную кнопкой ниже.",
+        "Бот запущен.\n"
+        "Автоотчёт будет приходить каждый день в 09:00.\n\n"
+        "Также можно запустить анализ вручную:",
         reply_markup=markup,
     )
 
 
-# ===== РУЧНОЙ ЗАПУСК АНАЛИЗА =====
+# ===== РУЧНОЙ АНАЛИЗ =====
 
 async def run_analysis(update: Update):
     """
-    Запускает анализ Яндекс Таблицы вручную
-    и отправляет результат в текущий чат.
+    Запускает анализ вручную по кнопке.
     """
 
     await update.message.reply_text("Запускаю анализ...")
@@ -92,12 +91,11 @@ async def run_analysis(update: Update):
         await update.message.reply_text(f"Ошибка при анализе: {error}")
 
 
-# ===== АВТОМАТИЧЕСКИЙ ЗАПУСК АНАЛИЗА =====
+# ===== АВТООТЧЁТ =====
 
 async def scheduled_report(context: ContextTypes.DEFAULT_TYPE):
     """
-    Автоматически запускает анализ по расписанию
-    и отправляет отчёт в TELEGRAM_CHAT_ID из .env.
+    Автоматически запускает анализ по расписанию.
     """
 
     chat_id = context.job.chat_id
@@ -122,14 +120,13 @@ async def scheduled_report(context: ContextTypes.DEFAULT_TYPE):
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
-    Обрабатывает текстовые сообщения и нажатия кнопок.
+    Обрабатывает нажатия кнопок.
     """
 
     text = update.message.text
 
     if text == "📊 Анализ сейчас":
         await run_analysis(update)
-
     else:
         await update.message.reply_text(
             "Не понял команду. Используй кнопку меню.",
@@ -141,22 +138,20 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 def main():
     """
-    Запускает Telegram-бота и автоматически ставит ежедневный отчёт на 09:00.
+    Запускает бота и ставит автоотчёт на 09:00.
     """
 
     if not TELEGRAM_BOT_TOKEN:
-        raise ValueError("Не заполнен TELEGRAM_BOT_TOKEN в .env")
+        raise ValueError("Не заполнен TELEGRAM_BOT_TOKEN")
 
     if not TELEGRAM_CHAT_ID:
-        raise ValueError("Не заполнен TELEGRAM_CHAT_ID в .env")
+        raise ValueError("Не заполнен TELEGRAM_CHAT_ID")
 
     app = ApplicationBuilder().token(TELEGRAM_BOT_TOKEN).build()
 
-    # Подключаем команды и обработчики сообщений
     app.add_handler(CommandHandler("start", start))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
-    # Ставим ежедневный автоматический отчёт на 09:00
     app.job_queue.run_daily(
         scheduled_report,
         time=time(hour=REPORT_HOUR, minute=REPORT_MINUTE),

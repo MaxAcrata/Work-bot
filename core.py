@@ -1,9 +1,19 @@
 import os
+import logging
 from datetime import datetime
 
 import pandas as pd
 import requests
 from dotenv import load_dotenv
+
+
+# ===== ЛОГИ =====
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s",
+)
+
 
 # ===== ЗАГРУЗКА НАСТРОЕК =====
 
@@ -11,12 +21,12 @@ load_dotenv()
 
 OVERDUE_DAYS = int(os.getenv("OVERDUE_DAYS", 3))
 YANDEX_PUBLIC_LINK = os.getenv("YANDEX_PUBLIC_LINK")
+
 DOWNLOADED_FILE_NAME = "yandex_table.xlsx"
 REPORT_FILE_NAME = "report.txt"
 
+
 # ===== ВАРИАНТЫ НАЗВАНИЙ КОЛОНОК =====
-# Код ищет нужные колонки не по точному названию,
-# а по похожим словам в заголовке.
 
 COLUMN_MAPPING = {
     "name": ["наименование", "название", "товар", "позиция"],
@@ -34,11 +44,12 @@ COLUMN_MAPPING = {
 def download_yandex_public_file():
     """
     Скачивает Excel-файл с Яндекс.Диска по публичной ссылке.
-    Ссылка берётся из .env: YANDEX_PUBLIC_LINK.
     """
 
     if not YANDEX_PUBLIC_LINK:
-        raise ValueError("Не заполнен YANDEX_PUBLIC_LINK в .env")
+        raise ValueError("Не заполнен YANDEX_PUBLIC_LINK")
+
+    logging.info("Получаю ссылку на скачивание с Яндекс.Диска")
 
     api_url = "https://cloud-api.yandex.net/v1/disk/public/resources/download"
 
@@ -51,11 +62,22 @@ def download_yandex_public_file():
 
     download_url = response.json()["href"]
 
+    logging.info("Скачиваю файл с Яндекс.Диска")
+
     file_response = requests.get(download_url, timeout=60)
     file_response.raise_for_status()
 
+    # Проверяем, что скачался именно Excel-файл .xlsx
+    if not file_response.content.startswith(b"PK"):
+        raise ValueError(
+            "Скачанный файл не является Excel .xlsx. "
+            "Проверь ссылку на Яндекс.Диске."
+        )
+
     with open(DOWNLOADED_FILE_NAME, "wb") as file:
         file.write(file_response.content)
+
+    logging.info("Файл успешно скачан")
 
     return DOWNLOADED_FILE_NAME
 
@@ -64,9 +86,7 @@ def download_yandex_public_file():
 
 def load_tasks(file_path):
     """
-    Загружает данные из Excel или CSV.
-    Для Excel сначала пробует calamine,
-    затем openpyxl как запасной вариант.
+    Загружает Excel или CSV.
     """
 
     if file_path.lower().endswith(".csv"):
@@ -74,14 +94,14 @@ def load_tasks(file_path):
 
     try:
         return pd.read_excel(file_path, engine="calamine")
-    except Exception:
+    except Exception as error:
+        logging.warning(f"Не удалось прочитать через calamine: {error}")
         return pd.read_excel(file_path, engine="openpyxl")
 
 
 def clean_column_names(df):
     """
-    Очищает названия колонок:
-    убирает лишние пробелы и переносы строк.
+    Очищает заголовки колонок.
     """
 
     df.columns = (
@@ -97,9 +117,7 @@ def clean_column_names(df):
 
 def map_columns(df):
     """
-    Автоматически ищет нужные колонки в таблице.
-    Возвращает словарь:
-    name -> реальное название колонки в файле.
+    Автоматически находит нужные колонки.
     """
 
     normalized_columns = {
@@ -136,8 +154,7 @@ def map_columns(df):
 
 def parse_date(value):
     """
-    Преобразует дату из Excel/CSV к формату Python date.
-    Если дата пустая или не распознана — возвращает None.
+    Преобразует дату к единому формату.
     """
 
     if pd.isna(value) or str(value).strip() == "":
@@ -159,7 +176,7 @@ def parse_date(value):
 
 def format_date(value):
     """
-    Форматирует дату для отчёта.
+    Красиво выводит дату.
     """
 
     if pd.isna(value) or value == "":
@@ -168,28 +185,30 @@ def format_date(value):
     return value.strftime("%d.%m.%Y")
 
 
-# ===== ФОРМИРОВАНИЕ ОТЧЁТА =====
+# ===== ОТЧЁТ =====
 
 def format_task(row, cols):
     """
-    Формирует строку одной заявки для текстового отчёта.
+    Формирует строку одной заявки.
     """
 
     name = row.get(cols["name"], "")
     qty = row.get(cols["quantity"], "")
     unit = row.get(cols["unit"], "")
+    obj = row.get(cols["object"], "")
     request_date = row.get(cols["request_date"], "")
 
     name = "" if pd.isna(name) else str(name).strip()
     qty = "" if pd.isna(qty) else str(qty).strip()
     unit = "" if pd.isna(unit) else str(unit).strip()
+    obj = "Не указан" if pd.isna(obj) or str(obj).strip() == "" else str(obj).strip()
 
     if name == "":
         name = "Без названия"
 
     qty_part = f"{qty} {unit}".strip()
 
-    return f"- {name} — {qty_part}, заявка: {format_date(request_date)}"
+    return f"- {name} — {qty_part}, объект: {obj}, дата заявки: {format_date(request_date)}"
 
 
 def build_report(active_tasks, ordered, not_ordered, overdue_tasks, cols):
@@ -199,9 +218,12 @@ def build_report(active_tasks, ordered, not_ordered, overdue_tasks, cols):
 
     report = []
 
-    overdue_sorted = overdue_tasks.sort_values(by=cols["request_date"])
+    if len(overdue_tasks) > 0:
+        report.append("🚨 ВНИМАНИЕ: есть просроченные заявки!")
+        report.append("")
 
     report.append("📊 Сводка по активным заявкам")
+    report.append(f"Дата отчёта: {datetime.today().strftime('%d.%m.%Y %H:%M')}")
     report.append("")
     report.append(f"Всего активных позиций: {len(active_tasks)}")
     report.append(f"Заказано, но не выполнено: {len(ordered)}")
@@ -209,8 +231,20 @@ def build_report(active_tasks, ordered, not_ordered, overdue_tasks, cols):
     report.append(f"Просрочено больше {OVERDUE_DAYS} дней: {len(overdue_tasks)}")
     report.append("")
 
+    report.append("🏭 По объектам:")
+
+    by_object = active_tasks[cols["object"]].fillna("Не указан").value_counts()
+
+    if len(by_object) == 0:
+        report.append("- Нет активных заявок")
+    else:
+        for object_name, count in by_object.items():
+            report.append(f"- {object_name}: {count}")
+
     report.append("")
     report.append(f"⚠️ Просрочено больше {OVERDUE_DAYS} дней:")
+
+    overdue_sorted = overdue_tasks.sort_values(by=cols["request_date"])
 
     if len(overdue_sorted) == 0:
         report.append("- Нет")
@@ -247,49 +281,58 @@ def build_report(active_tasks, ordered, not_ordered, overdue_tasks, cols):
 
 def analyze_yandex_table():
     """
-    Главная функция анализа:
-    1. скачивает файл;
-    2. читает таблицу;
-    3. фильтрует активные заявки;
-    4. считает просрочку;
-    5. формирует отчёт.
+    Главная функция:
+    скачивает таблицу, анализирует её и возвращает отчёт.
     """
 
-    file_path = download_yandex_public_file()
+    try:
+        logging.info("Запускаю анализ таблицы")
 
-    df = load_tasks(file_path)
-    df = clean_column_names(df)
+        file_path = download_yandex_public_file()
 
-    cols = map_columns(df)
+        df = load_tasks(file_path)
+        df = clean_column_names(df)
 
-    df[cols["request_date"]] = df[cols["request_date"]].apply(parse_date)
-    df[cols["done_date"]] = df[cols["done_date"]].apply(parse_date)
+        # Убираем полностью пустые строки
+        df = df.dropna(how="all")
 
-    active_tasks = df[
-        (df[cols["request_date"]].notna()) &
-        (df[cols["done_date"]].isna())
+        cols = map_columns(df)
+
+        df[cols["request_date"]] = df[cols["request_date"]].apply(parse_date)
+        df[cols["done_date"]] = df[cols["done_date"]].apply(parse_date)
+
+        # Активные заявки: есть дата заявки, но нет даты выполнения
+        active_tasks = df[
+            (df[cols["request_date"]].notna()) &
+            (df[cols["done_date"]].isna())
         ]
 
-    notes = active_tasks[cols["notes"]].fillna("").astype(str).str.lower()
+        notes = active_tasks[cols["notes"]].fillna("").astype(str).str.lower()
 
-    ordered = active_tasks[notes.str.contains("заказ", na=False)]
-    not_ordered = active_tasks[~notes.str.contains("заказ", na=False)]
+        ordered = active_tasks[notes.str.contains("заказ", na=False)]
+        not_ordered = active_tasks[~notes.str.contains("заказ", na=False)]
 
-    today = datetime.today().date()
+        today = datetime.today().date()
 
-    overdue_tasks = active_tasks[
-        active_tasks[cols["request_date"]] < today - pd.Timedelta(days=OVERDUE_DAYS)
+        overdue_tasks = active_tasks[
+            active_tasks[cols["request_date"]] < today - pd.Timedelta(days=OVERDUE_DAYS)
         ]
 
-    result = build_report(
-        active_tasks=active_tasks,
-        ordered=ordered,
-        not_ordered=not_ordered,
-        overdue_tasks=overdue_tasks,
-        cols=cols,
-    )
+        result = build_report(
+            active_tasks=active_tasks,
+            ordered=ordered,
+            not_ordered=not_ordered,
+            overdue_tasks=overdue_tasks,
+            cols=cols,
+        )
 
-    with open(REPORT_FILE_NAME, "w", encoding="utf-8") as file:
-        file.write(result)
+        with open(REPORT_FILE_NAME, "w", encoding="utf-8") as file:
+            file.write(result)
 
-    return result
+        logging.info("Анализ успешно завершён")
+
+        return result
+
+    except Exception as error:
+        logging.error(f"Ошибка анализа: {error}")
+        raise
